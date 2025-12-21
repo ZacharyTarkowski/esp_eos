@@ -19,6 +19,19 @@ use esp_radio::{
     },
 };
 
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
+use esp_hal::{
+    Async,
+    uart::{AtCmdConfig, Config, RxConfig, Uart, UartRx, UartTx},
+};
+use static_cell::StaticCell;
+
+//todo need to put in env
+// fifo_full_threshold (RX)
+const READ_BUF_SIZE: usize = 64;
+// EOT (CTRL-D)
+const AT_CMD: u8 = 0x04;
+
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
@@ -38,6 +51,7 @@ macro_rules! mk_static {
 
 mod alarm;
 mod net;
+mod usb;
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
@@ -82,6 +96,28 @@ async fn main(spawner: Spawner) -> ! {
         esp_hal::gpio::Output::new(peripherals.GPIO10, esp_hal::gpio::Level::High, config);
 
     println!("mac is {:x?}", esp_radio::wifi::sta_mac());
+
+    // Default pins for Uart communication
+
+    let (tx_pin, rx_pin) = (peripherals.GPIO21, peripherals.GPIO20);
+
+    let config = Config::default()
+        .with_rx(RxConfig::default().with_fifo_full_threshold(READ_BUF_SIZE as u16));
+
+    let mut uart0 = Uart::new(peripherals.UART0, config)
+        .unwrap()
+        .with_tx(tx_pin)
+        .with_rx(rx_pin)
+        .into_async();
+    uart0.set_at_cmd(AtCmdConfig::default().with_cmd_char(AT_CMD));
+
+    let (rx, tx) = uart0.split();
+
+    static SIGNAL: StaticCell<Signal<NoopRawMutex, usize>> = StaticCell::new();
+    let signal = &*SIGNAL.init(Signal::new());
+
+    spawner.spawn(usb::reader(rx, &signal)).ok();
+    spawner.spawn(usb::writer(tx, &signal)).ok();
 
     spawner.spawn(net::connection(controller)).ok();
     spawner.spawn(net::net_task(runner)).ok();
