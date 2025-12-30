@@ -60,7 +60,7 @@ pub async fn reader(mut rx: UartRx<'static, Async>, signal: &'static Signal<Noop
         let r = embedded_io_async::Read::read(&mut rx, &mut rbuf[offset..]).await;
         match r {
             Ok(len) => {
-                let mut new_offset = offset + len;
+                let new_offset = offset + len;
 
                 //not sure how read function works with buffer overflows?
                 // if new_offset > MAX_BUFFER_SIZE {
@@ -76,6 +76,7 @@ pub async fn reader(mut rx: UartRx<'static, Async>, signal: &'static Signal<Noop
                                 "Full input: {}",
                                 str::from_utf8(&rbuf[0..offset]).unwrap()
                             );
+                            parse_command(&rbuf[0..offset]);
                             offset = 0; /* do command */
                         }
                         0x08 => {
@@ -102,4 +103,35 @@ pub async fn reader(mut rx: UartRx<'static, Async>, signal: &'static Signal<Noop
             Err(e) => esp_println::println!("RX Error: {:?}", e),
         }
     }
+}
+#[derive(Debug)]
+pub enum AlarmError {
+    UnknownCmd,
+    BadCredentials,
+}
+
+#[derive(Debug)]
+pub enum AlarmCmd {
+    Wifi,
+    Unknown,
+}
+
+impl From<&[u8]> for AlarmCmd {
+    fn from(buf: &[u8]) -> Self {
+        match buf {
+            b"Wifi" => AlarmCmd::Wifi,
+            _ => AlarmCmd::Unknown,
+        }
+    }
+}
+
+fn parse_command(cmd_buf: &[u8]) -> Result<AlarmCmd, AlarmError> {
+    let cmd = match cmd_buf.into() {
+        AlarmCmd::Unknown => Err(AlarmError::UnknownCmd),
+        x => Ok(x),
+    };
+
+    println!("command entered : {:?}", cmd);
+
+    cmd
 }
