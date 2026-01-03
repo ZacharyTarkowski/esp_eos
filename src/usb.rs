@@ -16,7 +16,11 @@ use esp_radio::{
     },
 };
 
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
+use embassy_sync::pipe::{Pipe, Reader, Writer};
+
+use embassy_sync::{
+    blocking_mutex::raw::CriticalSectionRawMutex, blocking_mutex::raw::NoopRawMutex, signal::Signal,
+};
 use esp_hal::{
     Async,
     uart::{AtCmdConfig, Config, RxConfig, Uart, UartRx, UartTx},
@@ -51,11 +55,19 @@ pub async fn writer(mut tx: UartTx<'static, Async>, signal: &'static Signal<Noop
 }
 
 #[embassy_executor::task]
-pub async fn reader(mut rx: UartRx<'static, Async>, signal: &'static Signal<NoopRawMutex, usize>) {
+pub async fn reader(
+    mut rx: UartRx<'static, Async>,
+    signal: &'static Signal<NoopRawMutex, usize>,
+    cli_pipe_writer: &'static Writer<'static, CriticalSectionRawMutex, 256>,
+) {
     const MAX_BUFFER_SIZE: usize = 10 * READ_BUF_SIZE + 16;
 
     let mut rbuf: [u8; MAX_BUFFER_SIZE] = [0u8; MAX_BUFFER_SIZE];
     let mut offset = 0;
+
+    let bytes_written = cli_pipe_writer.write(&rbuf[0..offset]).await;
+    println!("init wrote {} bytes", bytes_written);
+
     loop {
         let r = embedded_io_async::Read::read(&mut rx, &mut rbuf[offset..]).await;
         match r {
@@ -77,6 +89,10 @@ pub async fn reader(mut rx: UartRx<'static, Async>, signal: &'static Signal<Noop
                                 str::from_utf8(&rbuf[0..offset]).unwrap()
                             );
                             parse_command(&rbuf[0..offset]);
+                            let bytes_written = cli_pipe_writer.write(&rbuf[0..offset]).await;
+                            //let bytes = bytes_written.await;
+                            println!("wrote {} bytes", bytes_written);
+
                             offset = 0; /* do command */
                         }
                         0x08 => {
@@ -134,4 +150,66 @@ fn parse_command(cmd_buf: &[u8]) -> Result<AlarmCmd, AlarmError> {
     println!("command entered : {:?}", cmd);
 
     cmd
+}
+
+//cli task is going to have to be a state machine
+#[derive(Debug)]
+enum CliState {
+    Idle,
+    WifiStart,
+    WifiPendingNet,
+    WifiPendingPass,
+}
+
+impl From<&[u8]> for CliState {
+    fn from(buf: &[u8]) -> Self {
+        match buf {
+            b"Wifi" | b"wifi" => CliState::WifiStart,
+            _ => CliState::Idle,
+        }
+    }
+}
+
+#[embassy_executor::task]
+pub async fn cli_task(cli_pipe: &'static Reader<'static, CriticalSectionRawMutex, 256>) {
+    use CliState::*;
+    //let mut buf: [u8; 256] = [0; 256];
+    //let mut buf_ref;
+    let mut buf = [0u8; 256];
+    let mut state = Idle;
+    println!("Start cli task");
+    loop {
+        let read_size = cli_pipe.read(&mut buf).await;
+        if read_size == 0 {
+            println! {"dead pipe {} {:?}",read_size, buf};
+            //Timer::after_secs(100).await;
+        }
+        let slice = &buf[0..read_size];
+        println! {"in cli task {:?} {:?}", state, slice};
+
+        //If idle attempt to match to command
+        match state {
+            Idle => {
+                state = slice.into();
+            }
+            _ => (),
+        }
+
+        //If active attempt next step
+        match state {
+            WifiStart => {
+                println! {"Enter network name : "};
+                state = WifiPendingNet;
+            }
+            WifiPendingNet => {
+                println! {"Enter password : "}; /* save network name */
+                state = WifiPendingPass;
+            }
+            WifiPendingPass => {
+                println! {"Donezo : "}; /* save password, signal connection task */
+                state = Idle;
+            }
+            _ => (),
+        }
+    }
 }

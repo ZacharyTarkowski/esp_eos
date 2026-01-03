@@ -8,6 +8,9 @@ use embassy_net::{Runner, StackResources, tcp::TcpSocket};
 use embassy_time::{Duration, Timer};
 use esp_alloc as _;
 
+use embassy_sync::channel::Channel;
+use embassy_sync::pipe::{Pipe, Reader, Writer};
+
 #[cfg(target_arch = "riscv32")]
 use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::{clock::CpuClock, ram, rng::Rng, timer::timg::TimerGroup};
@@ -19,7 +22,9 @@ use esp_radio::{
     },
 };
 
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
+use embassy_sync::{
+    blocking_mutex::raw::CriticalSectionRawMutex, blocking_mutex::raw::NoopRawMutex, signal::Signal,
+};
 use esp_hal::{
     Async,
     uart::{AtCmdConfig, Config, RxConfig, Uart, UartRx, UartTx},
@@ -116,8 +121,25 @@ async fn main(spawner: Spawner) -> ! {
     static SIGNAL: StaticCell<Signal<NoopRawMutex, usize>> = StaticCell::new();
     let signal = &*SIGNAL.init(Signal::new());
 
-    spawner.spawn(usb::reader(rx, &signal)).ok();
+    static CLI_PIPE: StaticCell<Pipe<CriticalSectionRawMutex, 256>> = StaticCell::new();
+    let mut cli_pipe = &mut *CLI_PIPE.init(Pipe::new());
+
+    //let mut cli_pipe = Pipe::<NoopRawMutex, 256>::new();
+    let (cli_pipe_reader, cli_pipe_writer) = cli_pipe.split();
+
+    static CLI_PIPE_READER: StaticCell<Reader<'static, CriticalSectionRawMutex, 256>> =
+        StaticCell::new();
+    let mut cli_pipe_reader = &*CLI_PIPE_READER.init(cli_pipe_reader);
+
+    static CLI_PIPE_WRITER: StaticCell<Writer<'static, CriticalSectionRawMutex, 256>> =
+        StaticCell::new();
+    let mut cli_pipe_writer = &*CLI_PIPE_WRITER.init(cli_pipe_writer);
+
+    spawner
+        .spawn(usb::reader(rx, &signal, &cli_pipe_writer))
+        .ok();
     spawner.spawn(usb::writer(tx, &signal)).ok();
+    spawner.spawn(usb::cli_task(&cli_pipe_reader)).ok();
 
     spawner.spawn(net::connection(controller)).ok();
     spawner.spawn(net::net_task(runner)).ok();
