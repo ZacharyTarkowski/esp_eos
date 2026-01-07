@@ -106,6 +106,8 @@ async fn main(spawner: Spawner) -> ! {
 
     let (tx_pin, rx_pin) = (peripherals.GPIO21, peripherals.GPIO20);
 
+    println!("here");
+
     let config = Config::default()
         .with_rx(RxConfig::default().with_fifo_full_threshold(READ_BUF_SIZE as u16));
 
@@ -117,34 +119,37 @@ async fn main(spawner: Spawner) -> ! {
     uart0.set_at_cmd(AtCmdConfig::default().with_cmd_char(AT_CMD));
 
     let (rx, tx) = uart0.split();
-
+    println!("here2");
     static SIGNAL: StaticCell<Signal<NoopRawMutex, usize>> = StaticCell::new();
     let signal = &*SIGNAL.init(Signal::new());
 
     static CLI_PIPE: StaticCell<Pipe<CriticalSectionRawMutex, 256>> = StaticCell::new();
     let mut cli_pipe = &mut *CLI_PIPE.init(Pipe::new());
+    let (reader, writer) = cli_pipe.split();
+    static WRITER: StaticCell<Writer<'static, CriticalSectionRawMutex, 256>> = StaticCell::new();
+    let writer = &*WRITER.init(writer);
 
     //let mut cli_pipe = Pipe::<NoopRawMutex, 256>::new();
-    let (cli_pipe_reader, cli_pipe_writer) = cli_pipe.split();
 
-    static CLI_PIPE_READER: StaticCell<Reader<'static, CriticalSectionRawMutex, 256>> =
-        StaticCell::new();
-    let mut cli_pipe_reader = &*CLI_PIPE_READER.init(cli_pipe_reader);
+    //something is bad about these
 
-    static CLI_PIPE_WRITER: StaticCell<Writer<'static, CriticalSectionRawMutex, 256>> =
-        StaticCell::new();
-    let mut cli_pipe_writer = &*CLI_PIPE_WRITER.init(cli_pipe_writer);
-
-    spawner
-        .spawn(usb::reader(rx, &signal, &cli_pipe_writer))
-        .ok();
+    //let (cli_pipe_reader, cli_pipe_writer) = make_static_pipe_split();
+    //let (connection_pipe_reader, connection_pipe_writer) = make_static_pipe_split();
+    println!("here3");
+    spawner.spawn(usb::reader(rx, &signal, &writer)).ok();
     spawner.spawn(usb::writer(tx, &signal)).ok();
-    spawner.spawn(usb::cli_task(&cli_pipe_reader)).ok();
+    // spawner
+    //     .spawn(usb::cli_task(&cli_pipe_reader, &connection_pipe_writer))
+    //     .ok();
 
-    spawner.spawn(net::connection(controller)).ok();
+    // spawner
+    //     .spawn(net::connection(controller, connection_pipe_reader))
+    //     .ok();
     spawner.spawn(net::net_task(runner)).ok();
 
     spawner.spawn(alarm::run_alarm(alarm_pin)).ok();
+
+    println!("spawned all tasks");
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
@@ -205,4 +210,25 @@ async fn main(spawner: Spawner) -> ! {
         }
         Timer::after(Duration::from_millis(3000)).await;
     }
+}
+
+fn make_static_pipe() -> &'static mut Pipe<CriticalSectionRawMutex, 256> {
+    static PIPE: StaticCell<Pipe<CriticalSectionRawMutex, 256>> = StaticCell::new();
+    let pipe = &mut *PIPE.init(Pipe::new());
+    pipe
+}
+
+fn make_static_pipe_split() -> (
+    &'static Reader<'static, CriticalSectionRawMutex, 256>,
+    &'static Writer<'static, CriticalSectionRawMutex, 256>,
+) {
+    let (cli_pipe_reader, cli_pipe_writer) = make_static_pipe().split();
+
+    static READER: StaticCell<Reader<'static, CriticalSectionRawMutex, 256>> = StaticCell::new();
+    let reader = &*READER.init(cli_pipe_reader);
+
+    static WRITER: StaticCell<Writer<'static, CriticalSectionRawMutex, 256>> = StaticCell::new();
+    let writer = &*WRITER.init(cli_pipe_writer);
+
+    (reader, writer)
 }

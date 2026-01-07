@@ -5,6 +5,10 @@ use embassy_net::{Runner, StackResources, tcp::TcpSocket};
 use embassy_time::{Duration, Timer};
 use esp_alloc as _;
 
+use embassy_sync::pipe::{Pipe, Reader, Writer};
+use embassy_sync::{
+    blocking_mutex::raw::CriticalSectionRawMutex, blocking_mutex::raw::NoopRawMutex, signal::Signal,
+};
 #[cfg(target_arch = "riscv32")]
 use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::{clock::CpuClock, ram, rng::Rng, timer::timg::TimerGroup};
@@ -15,14 +19,44 @@ use esp_radio::{
         ClientConfig, ModeConfig, ScanConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
     },
 };
+use espeos::MsgType;
 
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 
 #[embassy_executor::task]
-pub async fn connection(mut controller: WifiController<'static>) {
+pub async fn connection(
+    mut controller: WifiController<'static>,
+    cli_pipe: &'static Reader<'static, CriticalSectionRawMutex, 256>,
+) {
     println!("start connection task");
     println!("Device capabilities: {:?}", controller.capabilities());
+
+    //temporary, eventually want to write to flash in the CLI task or this task
+    //
+    let mut buf = [0u8; 256];
+    let mut ssid = false;
+    let mut pass = false;
+    loop {
+        let read_size = cli_pipe.read(&mut buf).await;
+        if read_size == 0 {
+            println! {"dead pipe {} {:?}",read_size, buf};
+            //Timer::after_secs(100).await;
+        }
+        //let slice = &buf[0..read_size];
+        let msgtype: MsgType = buf[0].into();
+        let msgbody = core::str::from_utf8(&buf[1..read_size]).unwrap();
+
+        //todo recieve msgtype enum to tell what message is
+        println! {"in connection task {:?} {:?}", msgtype, msgbody};
+
+        if ssid && pass {
+            break;
+        }
+
+        Timer::after(Duration::from_millis(500)).await;
+    }
+
     loop {
         match esp_radio::wifi::sta_state() {
             WifiStaState::Connected => {

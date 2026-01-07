@@ -17,6 +17,7 @@ use esp_radio::{
 };
 
 use embassy_sync::pipe::{Pipe, Reader, Writer};
+use espeos::MsgType::*;
 
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex, blocking_mutex::raw::NoopRawMutex, signal::Signal,
@@ -154,7 +155,7 @@ fn parse_command(cmd_buf: &[u8]) -> Result<AlarmCmd, AlarmError> {
 
 //cli task is going to have to be a state machine
 #[derive(Debug)]
-enum CliState {
+pub enum CliState {
     Idle,
     WifiStart,
     WifiPendingNet,
@@ -171,20 +172,27 @@ impl From<&[u8]> for CliState {
 }
 
 #[embassy_executor::task]
-pub async fn cli_task(cli_pipe: &'static Reader<'static, CriticalSectionRawMutex, 256>) {
+pub async fn cli_task(
+    cli_pipe: &'static Reader<'static, CriticalSectionRawMutex, 256>,
+    connection_pipe: &'static Writer<'static, CriticalSectionRawMutex, 256>,
+) {
     use CliState::*;
     //let mut buf: [u8; 256] = [0; 256];
     //let mut buf_ref;
     let mut buf = [0u8; 256];
+    let buflen = buf.len();
+
     let mut state = Idle;
     println!("Start cli task");
     loop {
-        let read_size = cli_pipe.read(&mut buf).await;
+        let mut buf_body = &mut buf[1..buflen];
+
+        let read_size = cli_pipe.read(&mut buf_body).await;
         if read_size == 0 {
-            println! {"dead pipe {} {:?}",read_size, buf};
+            println! {"dead pipe {} {:?}",read_size, buf_body};
             //Timer::after_secs(100).await;
         }
-        let slice = &buf[0..read_size];
+        let slice = &buf_body[0..read_size];
         println! {"in cli task {:?} {:?}", state, slice};
 
         //If idle attempt to match to command
@@ -204,10 +212,18 @@ pub async fn cli_task(cli_pipe: &'static Reader<'static, CriticalSectionRawMutex
             WifiPendingNet => {
                 println! {"Enter password : "}; /* save network name */
                 state = WifiPendingPass;
+
+                buf[0] = WifiSSID.into();
+                let bytes_written = connection_pipe.write(&buf[0..read_size + 1]).await;
+                println!("wrote {} bytes", bytes_written);
             }
             WifiPendingPass => {
                 println! {"Donezo : "}; /* save password, signal connection task */
                 state = Idle;
+
+                buf[0] = WifiPass.into();
+                let bytes_written = connection_pipe.write(&buf[0..read_size + 1]).await;
+                println!("wrote {} bytes", bytes_written);
             }
             _ => (),
         }
