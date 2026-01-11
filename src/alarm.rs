@@ -1,27 +1,5 @@
-use core::net::Ipv4Addr;
-
-use embassy_executor::Spawner;
-use embassy_net::{Runner, StackResources, tcp::TcpSocket};
 use embassy_time::{Duration, Timer};
 use esp_alloc as _;
-
-#[cfg(target_arch = "riscv32")]
-use esp_hal::interrupt::software::SoftwareInterruptControl;
-use esp_hal::{clock::CpuClock, ram, rng::Rng, timer::timg::TimerGroup};
-use esp_println::println;
-use esp_radio::{
-    Controller,
-    wifi::{
-        ClientConfig, ModeConfig, ScanConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
-    },
-};
-
-use esp_hal::dma_buffers;
-use esp_hal::spi::{
-    Mode,
-    master::{Config, Spi},
-};
-use esp_hal::time::Rate;
 use esp_println as _;
 
 #[embassy_executor::task]

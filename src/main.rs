@@ -4,31 +4,22 @@
 use core::net::Ipv4Addr;
 
 use embassy_executor::Spawner;
-use embassy_net::{Runner, StackResources, tcp::TcpSocket};
+use embassy_net::{StackResources, tcp::TcpSocket};
 use embassy_time::{Duration, Timer};
 use esp_alloc as _;
 
-use embassy_sync::channel::Channel;
 use embassy_sync::pipe::{Pipe, Reader, Writer};
 
 #[cfg(target_arch = "riscv32")]
 use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::{clock::CpuClock, ram, rng::Rng, timer::timg::TimerGroup};
 use esp_println::println;
-use esp_radio::{
-    Controller,
-    wifi::{
-        ClientConfig, ModeConfig, ScanConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
-    },
-};
+use esp_radio::Controller;
 
-use embassy_sync::{
-    blocking_mutex::raw::CriticalSectionRawMutex, blocking_mutex::raw::NoopRawMutex, signal::Signal,
-};
-use esp_hal::{
-    Async,
-    uart::{AtCmdConfig, Config, RxConfig, Uart, UartRx, UartTx},
-};
+use esp_hal::i2c::master::I2c;
+
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use esp_hal::uart::{AtCmdConfig, Config, RxConfig, Uart};
 use static_cell::StaticCell;
 
 //todo need to put in env
@@ -39,6 +30,7 @@ const AT_CMD: u8 = 0x04;
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
+    println!("Panic!");
     loop {}
 }
 
@@ -96,8 +88,72 @@ async fn main(spawner: Spawner) -> ! {
         seed,
     );
 
+    let sck = peripherals.GPIO2;
+    let sda = peripherals.GPIO3;
+    let config =
+        esp_hal::i2c::master::Config::default().with_frequency(esp_hal::time::Rate::from_khz(400));
+    let mut i2c = I2c::new(peripherals.I2C0, config)
+        .unwrap()
+        .with_sda(sda)
+        .with_scl(sck);
+
+    const SSD1306_ADDRESS: u8 = 0x3c;
+
+    i2c.write(SSD1306_ADDRESS, &[0, 0xae]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0xd4]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0x80]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0xa8]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0x3f]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0xd3]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0x00]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0x40]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0x8d]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0x14]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0xa1]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0xc8]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0xda]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0x12]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0x81]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0xcf]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0xf1]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0xdb]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0x40]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0xa4]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0xa6]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0xaf]).unwrap();
+    i2c.write(SSD1306_ADDRESS, &[0, 0x20, 0x00]).unwrap();
+
+    // fill the display
+    for _ in 0..64 {
+        let data: [u8; 17] = [
+            0x40, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff,
+        ];
+        i2c.write(SSD1306_ADDRESS, &data).unwrap();
+    }
+
+    // const DEVICE_ADDR: u8 = 0x77;
+    // let write_buffer = [0xAA];
+    // let mut read_buffer = [0u8; 22];
+
+    // // Reconfigure the driver to use async mode.
+    // let mut i2c = i2c.into_async();
+
+    // i2c.write_async(DEVICE_ADDR, &write_buffer).await?;
+    // i2c.write_read_async(DEVICE_ADDR, &write_buffer, &mut read_buffer)
+    //     .await?;
+    // i2c.read_async(DEVICE_ADDR, &mut read_buffer).await?;
+    // i2c.transaction_async(
+    //     DEVICE_ADDR,
+    //     &mut [
+    //         Operation::Write(&write_buffer),
+    //         Operation::Read(&mut read_buffer),
+    //     ],
+    // )
+    // .await?;
+
     let config = esp_hal::gpio::OutputConfig::default();
-    let mut alarm_pin: esp_hal::gpio::Output<'_> =
+    let alarm_pin: esp_hal::gpio::Output<'_> =
         esp_hal::gpio::Output::new(peripherals.GPIO10, esp_hal::gpio::Level::High, config);
 
     println!("mac is {:x?}", esp_radio::wifi::sta_mac());
@@ -118,33 +174,35 @@ async fn main(spawner: Spawner) -> ! {
         .into_async();
     uart0.set_at_cmd(AtCmdConfig::default().with_cmd_char(AT_CMD));
 
-    let (rx, tx) = uart0.split();
+    let (rx, _) = uart0.split();
     println!("here2");
-    static SIGNAL: StaticCell<Signal<NoopRawMutex, usize>> = StaticCell::new();
-    let signal = &*SIGNAL.init(Signal::new());
+    //static SIGNAL: StaticCell<Signal<NoopRawMutex, usize>> = StaticCell::new();
+    //let signal = &*SIGNAL.init(Signal::new());
 
     static CLI_PIPE: StaticCell<Pipe<CriticalSectionRawMutex, 256>> = StaticCell::new();
-    let mut cli_pipe = &mut *CLI_PIPE.init(Pipe::new());
+    let cli_pipe = &mut *CLI_PIPE.init(Pipe::new());
     let (reader, writer) = cli_pipe.split();
     static WRITER: StaticCell<Writer<'static, CriticalSectionRawMutex, 256>> = StaticCell::new();
     let writer = &*WRITER.init(writer);
+    static READER: StaticCell<Reader<'static, CriticalSectionRawMutex, 256>> = StaticCell::new();
+    let reader = &*READER.init(reader);
 
     //let mut cli_pipe = Pipe::<NoopRawMutex, 256>::new();
 
     //something is bad about these
 
     //let (cli_pipe_reader, cli_pipe_writer) = make_static_pipe_split();
-    //let (connection_pipe_reader, connection_pipe_writer) = make_static_pipe_split();
+    let (connection_pipe_reader, connection_pipe_writer) = make_static_pipe_split();
     println!("here3");
-    spawner.spawn(usb::reader(rx, &signal, &writer)).ok();
-    spawner.spawn(usb::writer(tx, &signal)).ok();
-    // spawner
-    //     .spawn(usb::cli_task(&cli_pipe_reader, &connection_pipe_writer))
-    //     .ok();
+    spawner.spawn(usb::reader(rx, &writer)).ok();
+    //spawner.spawn(usb::writer(tx)).ok();
+    spawner
+        .spawn(usb::cli_task(&reader, &connection_pipe_writer))
+        .ok();
 
-    // spawner
-    //     .spawn(net::connection(controller, connection_pipe_reader))
-    //     .ok();
+    spawner
+        .spawn(net::connection(controller, connection_pipe_reader))
+        .ok();
     spawner.spawn(net::net_task(runner)).ok();
 
     spawner.spawn(alarm::run_alarm(alarm_pin)).ok();
@@ -187,7 +245,7 @@ async fn main(spawner: Spawner) -> ! {
         println!("connected!");
         let mut buf = [0; 1024];
         loop {
-            use embedded_io_async::Write;
+            //use embedded_io_async::Write;
             let r = socket
                 .write(b"GET / HTTP/1.1\r\nHost: worldtimeapi.org/api/ip\r\n\r\n")
                 .await;
