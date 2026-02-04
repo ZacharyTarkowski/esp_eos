@@ -9,6 +9,9 @@ use espeos::MsgType::*;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use esp_hal::{Async, uart::UartRx};
 
+use esp_hal::i2c::master::I2c;
+use ssd1306::{Ssd1306Async, mode::TerminalModeAsync, prelude::*};
+
 // fifo_full_threshold (RX)
 const READ_BUF_SIZE: usize = 64;
 
@@ -32,6 +35,11 @@ const READ_BUF_SIZE: usize = 64;
 pub async fn reader(
     mut rx: UartRx<'static, Async>,
     cli_pipe_writer: &'static Writer<'static, CriticalSectionRawMutex, 256>,
+    mut display: Ssd1306Async<
+        I2CInterface<I2c<'static, Async>>,
+        DisplaySize128x32,
+        TerminalModeAsync,
+    >,
 ) {
     const MAX_BUFFER_SIZE: usize = 10 * READ_BUF_SIZE + 16;
 
@@ -57,72 +65,44 @@ pub async fn reader(
                     match *c {
                         0x0D => {
                             esp_println::print!("\r\n");
-                            esp_println::println!(
-                                "Full input: {}",
-                                str::from_utf8(&rbuf[0..offset]).unwrap()
-                            );
-                            //parse_command(&rbuf[0..offset]);
-                            let bytes_written = cli_pipe_writer.write(&rbuf[0..offset]).await;
-                            //let bytes = bytes_written.await;
-                            println!("wrote {} bytes", bytes_written);
+                            let _ = cli_pipe_writer.write(&rbuf[0..offset]).await;
+                            //println!("wrote {} bytes", bytes_written);
 
-                            offset = 0; /* do command */
+                            offset = 0;
+                            let _ = display.print_char(*c as char).await;
                         }
                         0x08 => {
                             if offset > 0 {
                                 offset -= 1;
-                                //sp_println::print! {""};
                             };
+
+                            let (x, y) = display.position().unwrap();
+                            let (x, y) = match (x, y) {
+                                (x, _) if x > 0 => (x - 1, y),
+                                (_, y) if x == 0 && y > 0 => (display.dimensions().0, y - 1),
+                                _ => (x, y),
+                            };
+
+                            // No need to panic over a messed up terminal.
+                            let _ = display.set_position(x, y).await;
+                            let _ = display.print_char(' ').await;
+                            let _ = display.set_position(x, y).await;
                         }
                         _ => {
                             if offset < MAX_BUFFER_SIZE {
                                 offset += 1;
                             }
+                            let _ = display.print_char(*c as char).await;
                         }
                     }
-                    //signal.signal(*c as usize);
+
                     esp_println::print!("{}", *c as char);
                 }
-                //offset += len;
-
-                //esp_println::println!("Read: {len}, data: {:x?}", &rbuf[..offset]);
-                //offset = 0;
-                //signal.signal(len);
             }
             Err(e) => esp_println::println!("RX Error: {:?}", e),
         }
     }
 }
-//#[derive(Debug)]
-// pub enum AlarmError {
-//     UnknownCmd,
-//     BadCredentials,
-// }
-// #[derive(Debug)]
-// pub enum AlarmCmd {
-//     Wifi,
-//     Unknown,
-// }
-
-// impl From<&[u8]> for AlarmCmd {
-//     fn from(buf: &[u8]) -> Self {
-//         match buf {
-//             b"Wifi" => AlarmCmd::Wifi,
-//             _ => AlarmCmd::Unknown,
-//         }
-//     }
-// }
-
-// fn parse_command(cmd_buf: &[u8]) -> Result<AlarmCmd, AlarmError> {
-//     let cmd = match cmd_buf.into() {
-//         AlarmCmd::Unknown => Err(AlarmError::UnknownCmd),
-//         x => Ok(x),
-//     };
-
-//     println!("command entered : {:?}", cmd);
-
-//     cmd
-// }
 
 //cli task is going to have to be a state machine
 #[derive(Debug)]

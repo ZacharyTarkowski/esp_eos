@@ -8,7 +8,10 @@ use embassy_net::{StackResources, tcp::TcpSocket};
 use embassy_time::{Duration, Timer};
 use esp_alloc as _;
 
-use embassy_sync::pipe::{Pipe, Reader, Writer};
+use embassy_sync::{
+    blocking_mutex::{CriticalSectionMutex, raw::NoopRawMutex},
+    pipe::{Pipe, Reader, Writer},
+};
 
 #[cfg(target_arch = "riscv32")]
 use esp_hal::interrupt::software::SoftwareInterruptControl;
@@ -21,6 +24,15 @@ use esp_hal::i2c::master::I2c;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use esp_hal::uart::{AtCmdConfig, Config, RxConfig, Uart};
 use static_cell::StaticCell;
+
+use embedded_graphics::{
+    mono_font::{MonoTextStyleBuilder, ascii::FONT_6X13},
+    pixelcolor::BinaryColor,
+    prelude::*,
+    text::{Baseline, Text},
+};
+
+use ssd1306::{I2CDisplayInterface, Ssd1306, Ssd1306Async, prelude::*};
 
 //todo need to put in env
 // fifo_full_threshold (RX)
@@ -95,62 +107,16 @@ async fn main(spawner: Spawner) -> ! {
     let mut i2c = I2c::new(peripherals.I2C0, config)
         .unwrap()
         .with_sda(sda)
-        .with_scl(sck);
+        .with_scl(sck)
+        .into_async();
 
-    const SSD1306_ADDRESS: u8 = 0x3c;
+    let interface = I2CDisplayInterface::new(i2c);
+    let mut display = Ssd1306Async::new(interface, DisplaySize128x32, DisplayRotation::Rotate0)
+        .into_terminal_mode();
+    display.init().await.unwrap();
+    display.clear().await.unwrap();
 
-    i2c.write(SSD1306_ADDRESS, &[0, 0xae]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0xd4]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0x80]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0xa8]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0x3f]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0xd3]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0x00]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0x40]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0x8d]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0x14]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0xa1]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0xc8]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0xda]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0x12]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0x81]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0xcf]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0xf1]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0xdb]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0x40]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0xa4]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0xa6]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0xaf]).unwrap();
-    i2c.write(SSD1306_ADDRESS, &[0, 0x20, 0x00]).unwrap();
-
-    // fill the display
-    for _ in 0..64 {
-        let data: [u8; 17] = [
-            0x40, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff,
-            0xff, 0xff, 0xff,
-        ];
-        i2c.write(SSD1306_ADDRESS, &data).unwrap();
-    }
-
-    // const DEVICE_ADDR: u8 = 0x77;
-    // let write_buffer = [0xAA];
-    // let mut read_buffer = [0u8; 22];
-
-    // // Reconfigure the driver to use async mode.
-    // let mut i2c = i2c.into_async();
-
-    // i2c.write_async(DEVICE_ADDR, &write_buffer).await?;
-    // i2c.write_read_async(DEVICE_ADDR, &write_buffer, &mut read_buffer)
-    //     .await?;
-    // i2c.read_async(DEVICE_ADDR, &mut read_buffer).await?;
-    // i2c.transaction_async(
-    //     DEVICE_ADDR,
-    //     &mut [
-    //         Operation::Write(&write_buffer),
-    //         Operation::Read(&mut read_buffer),
-    //     ],
-    // )
-    // .await?;
+    let _ = display.write_str("Eos Boot").await;
 
     let config = esp_hal::gpio::OutputConfig::default();
     let alarm_pin: esp_hal::gpio::Output<'_> =
@@ -159,10 +125,7 @@ async fn main(spawner: Spawner) -> ! {
     println!("mac is {:x?}", esp_radio::wifi::sta_mac());
 
     // Default pins for Uart communication
-
     let (tx_pin, rx_pin) = (peripherals.GPIO21, peripherals.GPIO20);
-
-    println!("here");
 
     let config = Config::default()
         .with_rx(RxConfig::default().with_fifo_full_threshold(READ_BUF_SIZE as u16));
@@ -175,9 +138,6 @@ async fn main(spawner: Spawner) -> ! {
     uart0.set_at_cmd(AtCmdConfig::default().with_cmd_char(AT_CMD));
 
     let (rx, _) = uart0.split();
-    println!("here2");
-    //static SIGNAL: StaticCell<Signal<NoopRawMutex, usize>> = StaticCell::new();
-    //let signal = &*SIGNAL.init(Signal::new());
 
     static CLI_PIPE: StaticCell<Pipe<CriticalSectionRawMutex, 256>> = StaticCell::new();
     let cli_pipe = &mut *CLI_PIPE.init(Pipe::new());
@@ -187,15 +147,17 @@ async fn main(spawner: Spawner) -> ! {
     static READER: StaticCell<Reader<'static, CriticalSectionRawMutex, 256>> = StaticCell::new();
     let reader = &*READER.init(reader);
 
-    //let mut cli_pipe = Pipe::<NoopRawMutex, 256>::new();
+    //todo wrap display in a mutex so that CLI commands can print to it.
+    //let display_mutex = embassy_sync::mutex::Mutex::new(Ssd1306Async);
 
-    //something is bad about these
-
-    //let (cli_pipe_reader, cli_pipe_writer) = make_static_pipe_split();
+    //todo
+    // function is obe, cant make multiple static, duh.
     let (connection_pipe_reader, connection_pipe_writer) = make_static_pipe_split();
-    println!("here3");
-    spawner.spawn(usb::reader(rx, &writer)).ok();
+    spawner.spawn(usb::reader(rx, &writer, display)).ok();
+
+    //Dont need a usb writer, just using debug statements. Eventually output is through display.
     //spawner.spawn(usb::writer(tx)).ok();
+
     spawner
         .spawn(usb::cli_task(&reader, &connection_pipe_writer))
         .ok();
@@ -203,11 +165,15 @@ async fn main(spawner: Spawner) -> ! {
     spawner
         .spawn(net::connection(controller, connection_pipe_reader))
         .ok();
+
     spawner.spawn(net::net_task(runner)).ok();
 
     spawner.spawn(alarm::run_alarm(alarm_pin)).ok();
 
     println!("spawned all tasks");
+
+    //todo
+    // make this a task in net
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
