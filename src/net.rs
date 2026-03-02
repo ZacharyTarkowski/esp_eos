@@ -1,28 +1,81 @@
-use core::net::Ipv4Addr;
-
-use embassy_executor::Spawner;
-use embassy_net::{Runner, StackResources, tcp::TcpSocket};
+use embassy_net::Runner;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::pipe::Reader;
 use embassy_time::{Duration, Timer};
-use esp_alloc as _;
-
 #[cfg(target_arch = "riscv32")]
-use esp_hal::interrupt::software::SoftwareInterruptControl;
-use esp_hal::{clock::CpuClock, ram, rng::Rng, timer::timg::TimerGroup};
 use esp_println::println;
-use esp_radio::{
-    Controller,
-    wifi::{
-        ClientConfig, ModeConfig, ScanConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
-    },
+use esp_radio::wifi::{
+    ClientConfig, ModeConfig, ScanConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
 };
+use espeos::MsgType;
 
-const SSID: &str = env!("SSID");
-const PASSWORD: &str = env!("PASSWORD");
+// #[embassy_executor::task]
+// pub async fn credentials(cli_pipe: &'static Reader<'static, CriticalSectionRawMutex, 256>) {
+
+//     // read flash
+
+// }
 
 #[embassy_executor::task]
-pub async fn connection(mut controller: WifiController<'static>) {
+pub async fn connection(
+    mut controller: WifiController<'static>,
+    cli_pipe: &'static Reader<'static, CriticalSectionRawMutex, 256>,
+) {
     println!("start connection task");
     println!("Device capabilities: {:?}", controller.capabilities());
+
+    let mut ssid = [0u8; 256];
+    let mut pass = [0u8; 256];
+
+    let mut ssid_str = core::str::from_utf8(&ssid).unwrap();
+    let mut pass_str = core::str::from_utf8(&pass).unwrap();
+
+    //temporary, eventually want to write to flash in the CLI task or this task
+    //
+    let mut buf = [0u8; 256];
+    let mut ssid_recv = false;
+    let mut pass_recv = false;
+    loop {
+        let read_size = cli_pipe.read(&mut buf).await;
+        if read_size == 0 {
+            println! {"dead pipe {} {:?}",read_size, buf};
+        }
+        //let slice = &buf[0..read_size];
+        let msgtype: MsgType = buf[0].into();
+        let msgbody_slice = &buf[1..read_size];
+        let msgbody = core::str::from_utf8(&msgbody_slice).expect("Msgbody bad slice?");
+
+        //todo recieve msgtype enum to tell what message is
+        println!("in connection task {:?} {:?}", msgtype, msgbody);
+        println!("here");
+        match msgtype {
+            MsgType::WifiSSID => {
+                println!(
+                    "here2 {} {} {}",
+                    msgbody_slice.len(),
+                    ssid[0..read_size - 1].len(),
+                    ssid[0..read_size].len()
+                );
+                ssid[0..read_size - 1].copy_from_slice(&msgbody_slice);
+                println!("here3");
+                ssid_str = core::str::from_utf8(&ssid[0..read_size]).expect("Bad SSID String");
+                ssid_recv = true;
+            }
+            MsgType::WifiPass => {
+                pass[0..read_size - 1].copy_from_slice(msgbody_slice);
+                pass_str = core::str::from_utf8(&pass[0..read_size]).expect("Bad Pass String");
+                pass_recv = true;
+            }
+            _ => (),
+        }
+        println!("here4");
+        if ssid_recv && pass_recv {
+            break;
+        }
+
+        Timer::after(Duration::from_millis(500)).await;
+    }
+
     loop {
         match esp_radio::wifi::sta_state() {
             WifiStaState::Connected => {
@@ -35,8 +88,8 @@ pub async fn connection(mut controller: WifiController<'static>) {
         if !matches!(controller.is_started(), Ok(true)) {
             let client_config = ModeConfig::Client(
                 ClientConfig::default()
-                    .with_ssid(SSID.into())
-                    .with_password(PASSWORD.into()),
+                    .with_ssid(ssid_str.into())
+                    .with_password(pass_str.into()),
             );
             controller.set_config(&client_config).unwrap();
             println!("Starting wifi");

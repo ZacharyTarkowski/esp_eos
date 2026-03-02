@@ -7,6 +7,7 @@ version      = "0.1.0"
 
 [dependencies]
 esp-hal = { version = "~1.0", features = ["esp32c3", "unstable"] }
+embassy-sync = "0.7"
 
 esp-rtos = { version = "0.2.0", features = [
   "embassy",
@@ -15,6 +16,12 @@ esp-rtos = { version = "0.2.0", features = [
   "esp32c3",
 ] }
 
+log = "0.4.17"
+
+sntpc = { version = "0.6.0", default-features = false, features = [
+    "embassy-socket",
+] }
+jiff = { version = "0.2.10", default-features = false, features = ["static"] }
 
 esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32c3"] }
 
@@ -23,6 +30,7 @@ embassy-net = { version = "0.7.1", features = [
   "medium-ethernet",
   "tcp",
   "udp",
+  "dns",
 ] }
 embedded-io = "0.7.1"
 embedded-io-async = "0.7.0"
@@ -52,6 +60,9 @@ smoltcp = { version = "0.12.0", default-features = false, features = [
 ] }
 
 esp-println = { version = "*", features = ["esp32c3", "log-04"] }
+
+embedded-graphics = "*"
+ssd1306 = { version = "0.10", features = ["async"] }
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"
