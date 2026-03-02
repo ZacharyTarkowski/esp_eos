@@ -1,12 +1,27 @@
 #![no_std]
 #![no_main]
 
-use core::net::Ipv4Addr;
+use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use embassy_executor::Spawner;
 use embassy_net::{StackResources, tcp::TcpSocket};
 use embassy_time::{Duration, Timer};
 use esp_alloc as _;
+
+use embassy_net::{
+    Runner,
+    dns::DnsQueryType,
+    udp::{PacketMetadata, UdpSocket},
+};
+use esp_alloc as _;
+use esp_hal::{
+    clock::CpuClock, interrupt::software::SoftwareInterruptControl, ram, rng::Rng, rtc_cntl::Rtc,
+    timer::timg::TimerGroup,
+};
+use esp_println::println;
+//use esp_radio::wifi::{Config, Interface, WifiController, scan::ScanConfig, sta::StationConfig};
+//use log::{error, info};
+use sntpc::{NtpContext, NtpTimestampGenerator, get_time};
 
 use embassy_sync::{
     blocking_mutex::{CriticalSectionMutex, raw::NoopRawMutex},
@@ -14,9 +29,9 @@ use embassy_sync::{
 };
 
 #[cfg(target_arch = "riscv32")]
-use esp_hal::interrupt::software::SoftwareInterruptControl;
-use esp_hal::{clock::CpuClock, ram, rng::Rng, timer::timg::TimerGroup};
-use esp_println::println;
+//use esp_hal::interrupt::software::SoftwareInterruptControl;
+//use esp_hal::{clock::CpuClock, ram, rng::Rng, timer::timg::TimerGroup};
+//use esp_println::println;
 use esp_radio::Controller;
 
 use esp_hal::i2c::master::I2c;
@@ -31,7 +46,7 @@ use embedded_graphics::{
     prelude::*,
     text::{Baseline, Text},
 };
-
+use log::{error, info};
 use ssd1306::{I2CDisplayInterface, Ssd1306, Ssd1306Async, prelude::*};
 
 //todo need to put in env
@@ -61,6 +76,32 @@ macro_rules! mk_static {
 mod alarm;
 mod net;
 mod usb;
+
+const TIMEZONE: jiff::tz::TimeZone = jiff::tz::get!("UTC");
+const NTP_SERVER: &str = "pool.ntp.org";
+
+/// Microseconds in a second
+const USEC_IN_SEC: u64 = 1_000_000;
+
+#[derive(Clone, Copy)]
+struct Timestamp<'a> {
+    rtc: &'a Rtc<'a>,
+    current_time_us: u64,
+}
+
+impl NtpTimestampGenerator for Timestamp<'_> {
+    fn init(&mut self) {
+        self.current_time_us = self.rtc.current_time_us();
+    }
+
+    fn timestamp_sec(&self) -> u64 {
+        self.current_time_us / 1_000_000
+    }
+
+    fn timestamp_subsec_micros(&self) -> u32 {
+        (self.current_time_us % 1_000_000) as u32
+    }
+}
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
@@ -146,6 +187,8 @@ async fn main(spawner: Spawner) -> ! {
     let writer = &*WRITER.init(writer);
     static READER: StaticCell<Reader<'static, CriticalSectionRawMutex, 256>> = StaticCell::new();
     let reader = &*READER.init(reader);
+    println!("here");
+    let rtc = Rtc::new(peripherals.LPWR);
 
     //todo wrap display in a mutex so that CLI commands can print to it.
     //let display_mutex = embassy_sync::mutex::Mutex::new(Ssd1306Async);
@@ -194,45 +237,75 @@ async fn main(spawner: Spawner) -> ! {
         Timer::after(Duration::from_millis(500)).await;
     }
 
+    let ntp_addrs = stack.dns_query(NTP_SERVER, DnsQueryType::A).await.unwrap();
+
+    if ntp_addrs.is_empty() {
+        panic!("Failed to resolve DNS. Empty result");
+    }
+
+    let mut rx_meta = [PacketMetadata::EMPTY; 16];
+    let mut rx_buffer = [0; 4096];
+    let mut tx_meta = [PacketMetadata::EMPTY; 16];
+    let mut tx_buffer = [0; 4096];
+
+    let mut socket = UdpSocket::new(
+        stack,
+        &mut rx_meta,
+        &mut rx_buffer,
+        &mut tx_meta,
+        &mut tx_buffer,
+    );
+
+    socket.bind(123).unwrap();
+
+    // Display initial Rtc time before synchronization
+    let now = jiff::Timestamp::from_microsecond(rtc.current_time_us() as i64).unwrap();
+    info!("Rtc: {now}");
+
     loop {
-        Timer::after(Duration::from_millis(1_000)).await;
+        let addr: IpAddr = ntp_addrs[0].into();
+        let result = get_time(
+            SocketAddr::from((addr, 123)),
+            &socket,
+            NtpContext::new(Timestamp {
+                rtc: &rtc,
+                current_time_us: 0,
+            }),
+        )
+        .await;
 
-        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+        match result {
+            Ok(time) => {
+                // Set time immediately after receiving to reduce time offset.
+                rtc.set_current_time_us(
+                    (time.sec() as u64 * USEC_IN_SEC)
+                        + ((time.sec_fraction() as u64 * USEC_IN_SEC) >> 32),
+                );
 
-        socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
-
-        let remote_endpoint = (Ipv4Addr::new(142, 250, 185, 115), 80);
-        println!("connecting...");
-        let r = socket.connect(remote_endpoint).await;
-        if let Err(e) = r {
-            println!("connect error: {:?}", e);
-            continue;
-        }
-        println!("connected!");
-        let mut buf = [0; 1024];
-        loop {
-            //use embedded_io_async::Write;
-            let r = socket
-                .write(b"GET / HTTP/1.1\r\nHost: worldtimeapi.org/api/ip\r\n\r\n")
-                .await;
-            if let Err(e) = r {
-                println!("write error: {:?}", e);
-                break;
+                // Compare RTC to parsed time
+                info!(
+                    "Response: {:?}\nTime: {}\nRtc : {}",
+                    time,
+                    // Create a Jiff Timestamp from seconds and nanoseconds
+                    jiff::Timestamp::from_second(time.sec() as i64)
+                        .unwrap()
+                        .checked_add(
+                            jiff::Span::new()
+                                .nanoseconds((time.seconds_fraction as i64 * 1_000_000_000) >> 32),
+                        )
+                        .unwrap()
+                        .to_zoned(TIMEZONE),
+                    jiff::Timestamp::from_microsecond(rtc.current_time_us() as i64)
+                        .unwrap()
+                        .to_zoned(TIMEZONE)
+                );
             }
-            let n = match socket.read(&mut buf).await {
-                Ok(0) => {
-                    println!("read EOF");
-                    break;
-                }
-                Ok(n) => n,
-                Err(e) => {
-                    println!("read error: {:?}", e);
-                    break;
-                }
-            };
-            println!("{}", core::str::from_utf8(&buf[..n]).unwrap());
+            Err(e) => {
+                error!("Error getting time: {e:?}");
+            }
         }
-        Timer::after(Duration::from_millis(3000)).await;
+
+        Timer::after(Duration::from_secs(10)).await;
     }
 }
 

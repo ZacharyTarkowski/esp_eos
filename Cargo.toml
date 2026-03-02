@@ -16,6 +16,12 @@ esp-rtos = { version = "0.2.0", features = [
   "esp32c3",
 ] }
 
+log = "0.4.17"
+
+sntpc = { version = "0.6.0", default-features = false, features = [
+    "embassy-socket",
+] }
+jiff = { version = "0.2.10", default-features = false, features = ["static"] }
 
 esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32c3"] }
 
@@ -24,6 +30,7 @@ embassy-net = { version = "0.7.1", features = [
   "medium-ethernet",
   "tcp",
   "udp",
+  "dns",
 ] }
 embedded-io = "0.7.1"
 embedded-io-async = "0.7.0"

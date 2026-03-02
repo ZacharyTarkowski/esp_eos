@@ -15,22 +15,6 @@ use ssd1306::{Ssd1306Async, mode::TerminalModeAsync, prelude::*};
 // fifo_full_threshold (RX)
 const READ_BUF_SIZE: usize = 64;
 
-// #[embassy_executor::task]
-// pub async fn writer(mut tx: UartTx<'static, Async>) {
-//     use core::fmt::Write;
-//     embedded_io_async::Write::write(
-//         &mut tx,
-//         b"Hello async serial. Enter something ended with EOT (CTRL-D).\r\n",
-//     )
-//     .await
-//     .unwrap();
-//     embedded_io_async::Write::flush(&mut tx).await.unwrap();
-//     loop {
-//         write!(&mut tx, "\r\n-- received {} bytes --\r\n", bytes_read).unwrap();
-//         embedded_io_async::Write::flush(&mut tx).await.unwrap();
-//     }
-// }
-
 #[embassy_executor::task]
 pub async fn reader(
     mut rx: UartRx<'static, Async>,

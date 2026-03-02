@@ -9,6 +9,13 @@ use esp_radio::wifi::{
 };
 use espeos::MsgType;
 
+// #[embassy_executor::task]
+// pub async fn credentials(cli_pipe: &'static Reader<'static, CriticalSectionRawMutex, 256>) {
+
+//     // read flash
+
+// }
+
 #[embassy_executor::task]
 pub async fn connection(
     mut controller: WifiController<'static>,
@@ -32,7 +39,6 @@ pub async fn connection(
         let read_size = cli_pipe.read(&mut buf).await;
         if read_size == 0 {
             println! {"dead pipe {} {:?}",read_size, buf};
-            //Timer::after_secs(100).await;
         }
         //let slice = &buf[0..read_size];
         let msgtype: MsgType = buf[0].into();
